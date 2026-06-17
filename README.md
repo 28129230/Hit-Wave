@@ -1,7 +1,7 @@
 # 双UPS智能监控与充放电控制系统
 
-https://img.shields.io/badge/platform-XIAO%20SAMD21-blue](https://www.seeedstudio.com/Seeed-XIAO-SAMD21-Cortex-M0-p-4173.html)
-https://img.shields.io/badge/hardware-UPS%20Module%203S-green](https://www.waveshare.com/ups-module-3s.htm)
+[https://img.shields.io/badge/platform-XIAO%20SAMD21-blue](https://www.seeedstudio.com/Seeed-XIAO-SAMD21-Cortex-M0-p-4173.html)
+[https://img.shields.io/badge/hardware-UPS%20Module%203S-green](https://www.waveshare.com/ups-module-3s.htm)
 
 一个基于 **XIAO SAMD21** 的双路 UPS 智能监控系统，具备 I2C 死锁恢复、继电器安全控制和树莓派心跳保活功能。
 
