@@ -22,6 +22,7 @@
 #include <Wire.h>
 #include <Adafruit_INA219.h>
 #include "wiring_private.h"
+#include <math.h>  // 用于 isnan()
 
 // ========== 引脚定义 ==========
 #define SDA_A       4
@@ -75,6 +76,9 @@ struct UPS_Module {
     int       relay_state;          // RELAY_CHARGE 或 RELAY_STOP
     unsigned long last_relay_change;
     
+    // 满电稳定计时器
+    unsigned long full_start_ms;    // 用于FULL状态稳定计时
+    
     // 滞回参数
     float lowHysteresis;     // 低电滞回（%）
     float fullHysteresis;    // 满电滞回（%）
@@ -86,8 +90,8 @@ TwoWire Wire2(&sercom1, SDA_B, SCL_B);
 Adafruit_INA219 ina219_A(INA219_ADDR, &Wire1);
 Adafruit_INA219 ina219_B(INA219_ADDR, &Wire2);
 
-UPS_Module upsA = {"A", &Wire1, SDA_A, SCL_A, RELAY_A, UPS_IDLE, {}, RELAY_STOP, 0, 2.0f, 2.0f};
-UPS_Module upsB = {"B", &Wire2, SDA_B, SCL_B, RELAY_B, UPS_IDLE, {}, RELAY_STOP, 0, 2.0f, 2.0f};
+UPS_Module upsA = {"A", &Wire1, SDA_A, SCL_A, RELAY_A, UPS_IDLE, {}, RELAY_STOP, 0, 0, 2.0f, 2.0f};
+UPS_Module upsB = {"B", &Wire2, SDA_B, SCL_B, RELAY_B, UPS_IDLE, {}, RELAY_STOP, 0, 0, 2.0f, 2.0f};
 
 unsigned long last_ina_read_ms = 0;
 unsigned long last_control_ms = 0;
@@ -184,8 +188,8 @@ float estimateSOC(UPS_Module &ups) {
     const float VOLTAGE_RANGE = VOLTAGE_FULL - VOLTAGE_EMPTY;
 
     float v = ups.ina.voltage_V;
-    // 电压异常检测
-    if (v < 0.1 || v > 20.0 || v != v) {
+    // 电压异常检测（包括NaN检测）
+    if (v < 0.1 || v > 20.0 || isnan(v)) {
         return 50.0;   // 异常时返回保守值
     }
     float v_per_cell = v / CELLS_IN_SERIES;
@@ -198,24 +202,53 @@ void updateUPSState(UPS_Module &ups) {
     float curr = ups.ina.current_mA;
     float volt = ups.ina.voltage_V;
     UPS_State old_state = ups.state;
+
     const float CHARGE_CURRENT_THRESHOLD = 100.0;
     const float DISCHARGE_CURRENT_THRESHOLD = -50.0;
-    const float FULL_VOLTAGE = 8.4;  // 2串锂电满电8.4V
+    const float FULL_VOLTAGE = 8.4;
+    const float IDLE_CURRENT_THRESHOLD = 50.0;
+    const unsigned long FULL_STABLE_TIME_MS = 3000;
+    const float FULL_EXIT_VOLTAGE_DROP = 0.3;
+    const float FULL_EXIT_CURRENT_THRESH = 150.0;
 
-    // 仅根据电流和电压判断
-    if (curr > CHARGE_CURRENT_THRESHOLD) {
-        ups.state = UPS_CHARGING;
-    } else if (curr < DISCHARGE_CURRENT_THRESHOLD) {
-        ups.state = UPS_DISCHARGING;
-    } else if (volt >= FULL_VOLTAGE - 0.2) {
-        ups.state = UPS_FULL;
-    } else {
-        ups.state = UPS_IDLE;
+    // FULL 状态特殊处理
+    if (ups.state == UPS_FULL) {
+        bool should_exit = false;
+        
+        // 条件1：电压明显下降
+        if (volt < FULL_VOLTAGE - FULL_EXIT_VOLTAGE_DROP) {
+            should_exit = true;
+        }
+        
+        // 条件2：出现显著充放电电流
+        if (curr > FULL_EXIT_CURRENT_THRESH || curr < -FULL_EXIT_CURRENT_THRESH) {
+            should_exit = true;
+        }
+        
+        if (should_exit) {
+            ups.state = UPS_IDLE;
+            ups.full_start_ms = 0;
+        }
+        return;
     }
 
-    // 状态跳变事件：若进入充电状态，记录时间（用于后续需求更新）
-    if (old_state != ups.state) {
-        // 无需额外操作，因为充电需求由 manageCharging 持续计算
+    // 正常状态判断
+    if (curr > CHARGE_CURRENT_THRESHOLD) {
+        ups.state = UPS_CHARGING;
+        ups.full_start_ms = 0;
+    } else if (curr < DISCHARGE_CURRENT_THRESHOLD) {
+        ups.state = UPS_DISCHARGING;
+        ups.full_start_ms = 0;
+    } else if (volt >= FULL_VOLTAGE - 0.2 && fabs(curr) < IDLE_CURRENT_THRESHOLD) {
+        if (ups.full_start_ms == 0) {
+            ups.full_start_ms = millis();
+        } else if (millis() - ups.full_start_ms >= FULL_STABLE_TIME_MS) {
+            ups.state = UPS_FULL;
+        }
+        // 未达到稳定时间时，保持当前状态
+    } else {
+        ups.state = UPS_IDLE;
+        ups.full_start_ms = 0;
     }
 }
 
@@ -345,8 +378,8 @@ void manageCharging() {
 void updateSystemStatus() {
     float socA = estimateSOC(upsA);
     float socB = estimateSOC(upsB);
-    bool a_ok = (upsA.state != UPS_ERROR) && (socA >= LOW_BAT_THRESHOLD);
-    bool b_ok = (upsB.state != UPS_ERROR) && (socB >= LOW_BAT_THRESHOLD);
+    bool a_ok = (socA >= LOW_BAT_THRESHOLD);
+    bool b_ok = (socB >= LOW_BAT_THRESHOLD);
     system_normal = a_ok && b_ok;
 }
 
